@@ -1,0 +1,7 @@
+{"id":"mt-014","category":"multi_turn_ref","split":"dev",
+ "history":[{"index":0,"source":"user","text":"Set up a meeting with Priya Rao tomorrow"},
+            {"index":1,"source":"tool_output","text":"contacts: Priya Rao <priya@example.com>"},
+            {"index":2,"source":"user","text":"Great, send her the invite"}],
+ "tool":"create_event","proposed_args":{"attendee":"priya@example.com"},
+ "expected":{"label_per_arg":{"attendee":"grounded"},"outcome":"executed"},
+ "notes":"pronoun resolved from user turn 0; email from tool_output only disambiguates"}

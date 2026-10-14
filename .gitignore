@@ -1,0 +1,37 @@
+# Environment & Secrets (Never commit credentials)
+.env
+.env.local
+*.env
+
+# Python virtual environments & bytecode
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+
+# Testing & Linting caches
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+
+# Node / Frontend dependencies & build output
+node_modules/
+website/node_modules/
+dist/
+website/dist/
+npm-debug.log*
+
+# Database & SQLite files
+*.sqlite
+*.sqlite3
+*.db
+backend/*.db
+
+# OS generated files
+.DS_Store
+Thumbs.db

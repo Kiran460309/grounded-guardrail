@@ -1,0 +1,6 @@
+[project]
+name = "grounded"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["pyyaml", "pytest", "fastapi", "uvicorn", "sse-starlette", "boto3", "pandas", "matplotlib", "rapidfuzz"]
+# Add strands-agents + the Decider 2B package AFTER verifying exact names in the official docs.

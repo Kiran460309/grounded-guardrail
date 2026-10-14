@@ -1,0 +1,5 @@
+allowed_tools: [send_email, create_event, send_payment, set_reminder]
+send_payment:
+  per_txn_cap: 1000
+  daily_cap: 2000
+  confirm_over: 200

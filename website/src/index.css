@@ -1,0 +1,58 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  background-color: #0a0f1e;
+  color: #e2e8f0;
+  font-family: 'Inter', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #0f1629; }
+::-webkit-scrollbar-thumb { background: #1c2845; border-radius: 3px; }
+
+/* Glass card */
+.glass {
+  background: rgba(15, 22, 41, 0.7);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+/* Gradient text */
+.gradient-text {
+  background: linear-gradient(135deg, #33a9ff 0%, #a78bfa 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Confidence bar */
+.conf-bar-track {
+  height: 6px;
+  border-radius: 3px;
+  background: #1c2845;
+  overflow: hidden;
+}
+
+.conf-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.5s ease;
+}
+
+/* Outcome badge */
+.badge-executed  { @apply bg-emerald-500/20 text-emerald-300 border border-emerald-500/30; }
+.badge-blocked   { @apply bg-red-500/20 text-red-300 border border-red-500/30; }
+.badge-clarify   { @apply bg-amber-500/20 text-amber-300 border border-amber-500/30; }
+.badge-policy    { @apply bg-blue-500/20 text-blue-300 border border-blue-500/30; }
+
+/* Chat bubble */
+.bubble-user      { @apply bg-brand-700/60 rounded-2xl rounded-br-sm px-4 py-3 max-w-[80%] self-end; }
+.bubble-agent     { @apply bg-surface-700 rounded-2xl rounded-bl-sm px-4 py-3 max-w-[80%] self-start border border-white/5; }

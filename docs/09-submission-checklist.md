@@ -1,0 +1,11 @@
+# 09 — Submission checklist (PASS/FAIL gate)
+- [ ] Builder Center profile exists; 18+; not in excluded country; not Amazon-affiliated
+- [ ] Public GitHub repo, MIT license present
+- [ ] Agent source in repo; runs on AWS with Bedrock
+- [ ] `patterns/grounding_guard/` clearly labelled reusable pattern: typed questions + wiring + README
+- [ ] Demo video < 3 min, public (YouTube), shows Decider decision working, no copyrighted music/logos
+- [ ] Article published on Builder Center describing agent + decision
+- [ ] Tags: #strands-decider-2b AND #guardrails
+- [ ] Original, not previously published
+- [ ] All links open in an incognito window
+- [ ] Submitted before Oct 23 11:59 PM PT (= Oct 24 12:29 PM IST); aim for Oct 22
