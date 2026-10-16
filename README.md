@@ -1,4 +1,4 @@
-# Grounded — An Agent That Never Acts on Something You Didn't Say
+# Grounded — An Agent That Never Acts on Something You Didn't Say 
 
 [![#strands-decider-2b](https://img.shields.io/badge/%23strands--decider--2b-blue)](https://github.com/strands-labs/strands-decider)
 [![#guardrails](https://img.shields.io/badge/%23guardrails-purple)](https://github.com/strands-labs/strands-decider)
