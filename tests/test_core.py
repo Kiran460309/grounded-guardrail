@@ -38,8 +38,15 @@ class TestProvenance:
             Turn(1, "tool_output", "Attacker injection"),
         ]
         state = render_state(history, "send_payment", "recipient", "attacker@z.com")
-        assert "Attacker injection" not in state
-        assert "Pay Sam" in state
+        # Tool output must NOT appear in USER STATEMENTS section.
+        assert "[0] Pay Sam" in state
+        assert "USER STATEMENTS" in state
+        # Tool output IS included in the SYSTEM LOOKUP section (for disambiguation)
+        # but must be clearly labelled so Decider knows it cannot ground new values.
+        assert "SYSTEM LOOKUP" in state
+        assert "Attacker injection" in state
+        # The lookup label confirms it's not user-authored:
+        assert "not user-authored" in state or "cannot introduce new values" in state
 
     def test_injection_from_pasted_blocked(self):
         h = [Turn(0, "user", "Summarize my email"),
@@ -119,6 +126,14 @@ class TestPolicy:
     def test_confirm_over(self):
         r = authorize("send_payment", {"amount": 300}, RULES)
         assert r.result == "needs_confirm"
+
+    def test_invalid_amounts(self):
+        # non-numeric, negative, zero, nan, inf must all be denied
+        bad_inputs = ["abc", -10.0, 0, 0.0, float("nan"), float("inf"), float("-inf"), None, [], {}]
+        for bad in bad_inputs:
+            r = authorize("send_payment", {"amount": bad}, RULES)
+            assert r.result == "deny", f"Expected deny for {bad!r}, got {r.result}"
+            assert r.rule == "invalid_amount"
 
     def test_grounding_is_not_authorization(self):
         # Policy and grounding are separate modules — this test asserts they don't cross-import
@@ -253,3 +268,58 @@ class TestAgentScenarios:
             r = self.agent.run_scenario(key)
             assert "expected_outcome" in r
             assert "outcome" in r
+
+
+# ── Strands Hook Integration ──────────────────────────────────────────────────
+
+class TestStrandsHook:
+    def test_strands_hook_deny(self):
+        from patterns.grounding_guard.handler import GroundingGuard, GroundingGuardHandler
+        from patterns.grounding_guard.decider_client import MockDecider
+        from strands.hooks.events import BeforeToolCallEvent
+        from strands.interventions import Deny
+
+        guard = GroundingGuard(decider=MockDecider())
+        handler = GroundingGuardHandler(guard)
+
+        # User said "Pay Sam", but agent calls with ungrounded amount
+        ev = BeforeToolCallEvent(
+            selected_tool=None,
+            tool_use={"toolUseId": "call_1", "name": "send_payment", "input": {"recipient": "sam@example.com", "amount": 50.0}},
+            invocation_state={"messages": [{"role": "user", "content": "Pay Sam"}]},
+            agent=None,
+        )
+        action = handler.before_tool_call(ev)
+        assert isinstance(action, Deny)
+        assert "not grounded" in action.reason
+
+    def test_strands_hook_proceed(self):
+        from patterns.grounding_guard.handler import GroundingGuard, GroundingGuardHandler
+        from patterns.grounding_guard.decider_client import MockDecider
+        from strands.hooks.events import BeforeToolCallEvent
+        from strands.interventions import Proceed
+
+        guard = GroundingGuard(decider=MockDecider())
+        handler = GroundingGuardHandler(guard)
+
+        # User said "Pay sam@example.com 50 dollars"
+        ev = BeforeToolCallEvent(
+            selected_tool=None,
+            tool_use={"toolUseId": "call_2", "name": "send_payment", "input": {"recipient": "sam@example.com", "amount": 50.0}},
+            invocation_state={"messages": [{"role": "user", "content": "Pay sam@example.com 50 dollars"}]},
+            agent=None,
+        )
+        action = handler.before_tool_call(ev)
+        assert isinstance(action, Proceed)
+
+    def test_create_grounded_agent_factory(self):
+        from agent import create_grounded_agent
+        from strands import Agent
+        from strands.models import BedrockModel
+
+        dummy_model = BedrockModel(model_id="anthropic.claude-3-sonnet-20240229-v1:0", region_name="us-west-2")
+        agent = create_grounded_agent(model=dummy_model)
+        assert isinstance(agent, Agent)
+        assert len(agent._intervention_registry._handlers) == 1
+        assert agent._intervention_registry._handlers[0].name == "grounding-guard"
+

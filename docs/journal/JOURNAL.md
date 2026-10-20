@@ -48,3 +48,32 @@ Not yet reached. Will re-evaluate after real Decider is wired.
 - Response JSON schema: UNVERIFIED (awaiting real response capture from user's cloud server).
 - Hardware / latency: UNVERIFIED on cloud target (awaiting live capture).
 
+## 2026-10-20 — 6 Priority Architecture & Guardrail Fixes Complete (tests 35/35 green)
+
+### Done
+1. **Strands API Verified & Real Bedrock Agent Wired**:
+   - Inspected installed `strands-agents` 1.61.1 source (`strands.interventions.handler.InterventionHandler`, `BeforeToolCallEvent`, `Deny`, `Guide`, `Proceed`).
+   - Wired `GroundingGuardHandler` through the real Strands tool-call intervention lifecycle.
+   - Built `create_grounded_agent` factory in `agent/__init__.py` with `@tool` registration and BedrockModel support.
+   - Kept `SimpleGroundedAgent` as an offline test fixture.
+2. **Canonical Typed Question Verdicts**:
+   - Implemented `normalise_label()` in `thresholds.py` mapping `unique`/`multiple`/`none` (Q_RECIPIENT) and `user_origin`/`untrusted_origin` (Q_INJECTION) to canonical `grounded`/`ambiguous`/`not_grounded`.
+   - Gate routing accepts canonical labels with fail-closed default for unknown labels.
+3. **Provenance & Disambiguation System Lookup Section**:
+   - Added `SYSTEM LOOKUP (not user-authored)` section to `render_state` in `question.py`.
+   - Explicitly labelled tool outputs so Decider can disambiguate user-mentioned entities without introducing new values.
+4. **Batched Decider Requests**:
+   - Implemented batching per tool call via `decide_many()` with single shared state prefix for KV cache efficiency.
+   - Graceful per-argument fallback when using `MockDecider`.
+5. **Guarded Arguments & Numeric Normalization**:
+   - Defined `GUARDED_ARGS` per tool; unguarded arguments pass through without Decider overhead.
+   - Implemented `_normalize_numeric_value()` to normalize amounts prior to evaluation.
+6. **Policy Hardening & Confirmation Flow**:
+   - Hardened `policy/limits.py` to deny non-numeric, NaN, inf, negative, and zero amounts (`invalid_amount`).
+   - Preserved strict rule check order: allowlist -> invalid_amount -> per_txn_cap -> daily_cap -> confirm_over.
+   - Handled `needs_confirm` policy outcome as `clarify` in `handler.py` to prompt user for confirmation.
+7. **Test Coverage**:
+   - Added `TestStrandsHook` covering `Deny`, `Proceed`, and agent factory.
+   - Added `TestPolicy.test_invalid_amounts`.
+   - All 35 tests pass green.
+

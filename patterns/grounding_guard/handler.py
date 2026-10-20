@@ -1,11 +1,27 @@
 """
-GroundingGuard — Strands InterventionHandler that intercepts every tool call
-and asks Decider 2B a typed question per argument before allowing execution.
+GroundingGuard — grounding guard for Strands agents.
+
+Contains two public classes:
+
+  GroundingGuard   — standalone helper (our own API). Call intercept() from
+                     any tool-call hook or test. Used by SimpleGroundedAgent
+                     and tests.
+
+  GroundingGuardHandler — REAL Strands InterventionHandler subclass (API
+                     verified against strands-agents 1.61.1 installed at
+                     .venv/Lib/site-packages/strands). Implements
+                     before_tool_call(event: BeforeToolCallEvent) and bridges
+                     to GroundingGuard.intercept(). Wire into a Strands Agent
+                     via the intervention_handlers argument (see agent/ module).
 
 ARCHITECTURE RULE: nothing here imports /agent. This module is standalone.
 
-NOTE: The exact Strands InterventionHandler API is verified against the installed
-strands-agents package. If the API changes, only this file needs updating.
+NOTE: InterventionHandler API source is at:
+  strands.interventions.handler.InterventionHandler
+BeforeToolCallEvent source is at:
+  strands.hooks.events.BeforeToolCallEvent
+These were read directly from site-packages on 2026-10-20. If strands-agents
+version changes, grep site-packages/strands for InterventionHandler / hooks again.
 """
 from __future__ import annotations
 
@@ -18,7 +34,7 @@ from typing import Any, Callable
 
 from .question import Turn, Q_GROUNDED, Q_RECIPIENT, Q_INJECTION, render_state
 from .decider_client import DeciderClient, MockDecider, Decision
-from .thresholds import Thresholds, gate, combine
+from .thresholds import Thresholds, gate, combine, normalise_label
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +45,35 @@ ARG_QUESTION_MAP: dict[str, Any] = {
     "send_payment.recipient":Q_RECIPIENT,
     "create_event.attendee": Q_RECIPIENT,
 }
+
+# Per-tool list of arguments that must be grounded before the tool executes.
+# Arguments NOT in this list are not sent to Decider (they pass through).
+# Keeping the list minimal reduces latency and avoids false blocks on
+# purely mechanical args (e.g. currency, message-id) that the LLM fills in.
+GUARDED_ARGS: dict[str, set[str]] = {
+    "send_email":    {"to", "subject", "body"},
+    "send_payment":  {"recipient", "amount"},
+    "create_event":  {"attendee", "date"},
+    "set_reminder":  {"text", "time"},
+    # Any tool not listed here has ALL its args guarded (safe default).
+}
+
+
+def _normalise_value(value: Any) -> str:
+    """Normalise a tool-argument value to a stable string for Decider.
+
+    * Floats that are whole numbers are displayed as ints (50.0 -> '50').
+    * Other floats are rendered with full precision.
+    * Everything else uses str().
+    """
+    if isinstance(value, float):
+        if value != value:          # NaN
+            return "nan"
+        if value in (float("inf"), float("-inf")):
+            return str(value)
+        if value == int(value):
+            return str(int(value))
+    return str(value)
 
 
 @dataclass
@@ -89,18 +134,19 @@ class DecisionEvent:
 
 class GroundingGuard:
     """
-    Drop-in grounding guard for Strands agents.
+    Standalone grounding guard helper.
 
-    Usage (10 lines):
-        from patterns.grounding_guard.handler import GroundingGuard
-        from patterns.grounding_guard.decider_client import MockDecider
-        from patterns.grounding_guard.thresholds import Thresholds
+    This class owns the core guard logic (policy → per-argument Decider
+    questions → gate → event). It exposes intercept() as a plain method so
+    SimpleGroundedAgent and tests can call it without depending on Strands.
 
+    To wire into a real Strands Agent, use GroundingGuardHandler (below)
+    which subclasses the verified InterventionHandler ABC and delegates to
+    this class.
+
+    Usage:
         guard = GroundingGuard(decider=MockDecider(), thresholds=Thresholds())
-        # Wire into Strands agent (exact API verified against strands-agents package):
-        # agent = Agent(model=..., tools=[...], before_tool_call=guard.intercept)
-
-    See README.md for the real wiring once InterventionHandler API is confirmed.
+        outcome, msg, event = guard.intercept(tool_name, tool_args, history)
     """
 
     def __init__(
@@ -154,6 +200,25 @@ class GroundingGuard:
                 )
                 self._emit(event)
                 return "blocked_by_policy", event.message_to_agent, event
+            if pr.result == "needs_confirm":
+                # needs_confirm is a policy signal, not a grounding block.
+                # Surface it as a clarify outcome so the agent asks the user
+                # for explicit confirmation before proceeding.
+                msg = (
+                    f"CONFIRM NEEDED: {pr.detail}. "
+                    f"Please ask the user to explicitly confirm before retrying."
+                )
+                event = DecisionEvent(
+                    event_id=event_id, ts=ts,
+                    session_id=self.session_id, turn=self._turn,
+                    tool=tool_name, guard_enabled=self.enabled,
+                    policy=policy_result, arguments=[],
+                    outcome="clarify",
+                    message_to_agent=msg,
+                    backend=self.decider.backend,
+                )
+                self._emit(event)
+                return "clarify", msg, event
 
         # ── 2. Guard disabled — pass through ────────────────────────────────
         if not self.enabled:
@@ -169,37 +234,89 @@ class GroundingGuard:
             self._emit(event)
             return "executed", "", event
 
-        # ── 3. Per-argument Decider calls ────────────────────────────────────
+        # ── 3. Batch Decider questions — one request per tool call ──────────────
+        # Build the shared state once (all args share the same user-evidence prefix).
+        # Then batch all guarded arguments into a single decide_many() call.
         evidence_turns = [t.index for t in history if t.source == "user"]
+
+        # Filter to only guarded arguments for this tool.
+        tool_guard_set = GUARDED_ARGS.get(tool_name, None)  # None → guard all
+        guarded_items = [
+            (arg_name, arg_value)
+            for arg_name, arg_value in tool_args.items()
+            if tool_guard_set is None or arg_name in tool_guard_set
+        ]
+
+        # Build question specs for decide_many() — keyed by "arg_name".
+        state = render_state(history, tool_name, "(batch)", "(multiple)")
+        questions_spec: dict[str, dict[str, Any]] = {}
+        meta: dict[str, tuple[str, Any, Any]] = {}  # arg_name -> (normalised_val, typed_q, q_key)
+
+        for arg_name, arg_value in guarded_items:
+            norm_val = _normalise_value(arg_value)
+            q_key = f"{tool_name}.{arg_name}"
+            typed_q = ARG_QUESTION_MAP.get(q_key, Q_GROUNDED)
+            question_text = typed_q.template.format(value=norm_val, arg=arg_name)
+            questions_spec[arg_name] = {
+                "type": "noul",
+                "instructions": question_text,
+            }
+            meta[arg_name] = (norm_val, typed_q, q_key)
+
+        # Send the batch (or fall back to per-call if MockDecider / missing decide_many).
         arg_decisions: list[ArgDecision] = []
         per_arg_gates: list[str] = []
 
-        for arg_name, arg_value in tool_args.items():
-            q_key = f"{tool_name}.{arg_name}"
-            typed_q = ARG_QUESTION_MAP.get(q_key, Q_GROUNDED)
-            state = render_state(history, tool_name, arg_name, str(arg_value))
-            question_text = typed_q.template.format(value=str(arg_value), arg=arg_name)
-
+        if guarded_items:
             try:
-                dec: Decision = self.decider.decide(state, question_text, typed_q)
-                g = gate(dec.label, dec.confidence, q_key, self.thresholds)
-            except Exception as exc:
-                logger.error("Decider error: %s", exc)
-                if self.thresholds.fail_closed:
-                    dec = Decision("ambiguous", 0.0, 0.0, "error")
-                    g = "clarify"
+                if hasattr(self.decider, "decide_many"):
+                    batch_results = self.decider.decide_many(state, questions_spec)
+                    # decide_many may raise NotImplementedError (HttpDecider Stage A(b))
+                    # — fall through to per-call path in that case.
                 else:
-                    dec = Decision("grounded", 1.0, 0.0, "error_open")
-                    g = "execute"
+                    raise AttributeError("decide_many not available")
+            except (NotImplementedError, AttributeError):
+                # Fall back: call decide() once per argument (MockDecider path).
+                batch_results = {}
+                for arg_name, (norm_val, typed_q, q_key) in meta.items():
+                    arg_state = render_state(history, tool_name, arg_name, norm_val)
+                    question_text = typed_q.template.format(value=norm_val, arg=arg_name)
+                    try:
+                        batch_results[arg_name] = self.decider.decide(
+                            arg_state, question_text, typed_q
+                        )
+                    except Exception as exc:
+                        logger.error("Decider error for %s.%s: %s", tool_name, arg_name, exc)
+                        batch_results[arg_name] = (
+                            Decision("ambiguous", 0.0, 0.0, "decider_error")
+                            if self.thresholds.fail_closed
+                            else Decision("grounded", 1.0, 0.0, "error_open")
+                        )
+            except Exception as exc:
+                logger.error("Decider batch error: %s", exc)
+                # Fail-closed: treat all as ambiguous.
+                batch_results = {
+                    arg_name: Decision("ambiguous", 0.0, 0.0, "decider_error")
+                    for arg_name in meta
+                }
 
-            arg_decisions.append(ArgDecision(
-                name=arg_name, value=str(arg_value),
-                question_id=typed_q.id,
-                label=dec.label, confidence=dec.confidence,
-                latency_ms=dec.latency_ms, gate_result=g,
-                evidence_turns=evidence_turns,
-            ))
-            per_arg_gates.append(g)
+            for arg_name, (norm_val, typed_q, q_key) in meta.items():
+                dec: Decision = batch_results.get(
+                    arg_name,
+                    Decision("ambiguous", 0.0, 0.0, "decider_error")
+                    if self.thresholds.fail_closed
+                    else Decision("grounded", 1.0, 0.0, "error_open"),
+                )
+                canonical = normalise_label(dec.label)
+                g = gate(canonical, dec.confidence, q_key, self.thresholds)
+                arg_decisions.append(ArgDecision(
+                    name=arg_name, value=norm_val,
+                    question_id=typed_q.id,
+                    label=dec.label, confidence=dec.confidence,
+                    latency_ms=dec.latency_ms, gate_result=g,
+                    evidence_turns=evidence_turns,
+                ))
+                per_arg_gates.append(g)
 
         # ── 4. Combine per-arg outcomes and normalise to event-contract vocab ────
         _raw = combine(per_arg_gates) if per_arg_gates else "execute"
@@ -241,3 +358,100 @@ class GroundingGuard:
         logger.debug("DecisionEvent: %s", json.dumps(event.to_dict()))
         if self.event_callback:
             self.event_callback(event)
+
+
+# ── Real Strands InterventionHandler subclass ──────────────────────────────
+# API verified from strands-agents 1.61.1 site-packages on 2026-10-20:
+#   InterventionHandler  → strands.interventions.handler
+#   BeforeToolCallEvent  → strands.hooks.events
+#   BeforeToolCallEvent.tool_use is a ToolUse TypedDict with keys:
+#     toolUseId, name, input  (input is the args dict)
+#   BeforeToolCallEvent.invocation_state holds the conversation state list
+#     under key 'messages' (list of dicts with 'role' and 'content').
+#   Return Deny(reason=...) to cancel, Guide(feedback=...) to ask clarify,
+#   or Proceed() to allow.
+
+try:
+    from strands import InterventionHandler  # type: ignore[import]
+    from strands.hooks.events import BeforeToolCallEvent  # type: ignore[import]
+    from strands.interventions.actions import Deny, Guide, Proceed  # type: ignore[import]
+
+    class GroundingGuardHandler(InterventionHandler):
+        """
+        Real Strands InterventionHandler that runs GroundingGuard in the
+        tool-call path. Wire via:
+
+            from strands import Agent
+            from patterns.grounding_guard.handler import GroundingGuardHandler
+
+            handler = GroundingGuardHandler(guard=guard)
+            agent = Agent(
+                model=model,
+                tools=[...],
+                interventions=[handler],
+            )
+
+        The handler converts BeforeToolCallEvent → intercept() args, then maps
+        the outcome back to Strands action objects (Deny / Guide / Proceed).
+        History is reconstructed from event.agent.messages or invocation_state['messages'].
+        """
+        name = "grounding-guard"
+        on_error: str = "deny"  # fail-closed: broken handler → Deny
+
+        def __init__(self, guard: GroundingGuard):
+            self._guard = guard
+
+        def before_tool_call(
+            self, event: "BeforeToolCallEvent", **kwargs: Any
+        ) -> "Proceed | Deny | Guide":
+            """Called by Strands before each tool execution."""
+            tool_use = event.tool_use          # ToolUse TypedDict
+            tool_name: str = tool_use["name"]
+            tool_args: dict = tool_use.get("input", {})
+
+            # Reconstruct Turn list from conversation messages.
+            # Only 'user' role messages count as grounding evidence.
+            history: list[Turn] = []
+            messages = []
+            if hasattr(event, "agent") and getattr(event, "agent", None) and hasattr(event.agent, "messages"):
+                messages = event.agent.messages
+            elif hasattr(event, "invocation_state") and isinstance(event.invocation_state, dict):
+                messages = event.invocation_state.get("messages", []) or []
+
+            for idx, msg in enumerate(messages):
+                role = msg.get("role", "")
+                if role != "user":
+                    continue
+                content = msg.get("content", "")
+                if isinstance(content, list):
+                    # Anthropic-style: list of {type, text} blocks
+                    text = " ".join(
+                        block.get("text", "") for block in content
+                        if isinstance(block, dict) and block.get("type") == "text"
+                    )
+                else:
+                    text = str(content)
+                history.append(Turn(index=idx, source="user", text=text))
+
+            outcome, message, _event = self._guard.intercept(
+                tool_name=tool_name,
+                tool_args=tool_args,
+                history=history,
+            )
+
+            if outcome in ("blocked", "block", "blocked_by_policy"):
+                return Deny(reason=message or f"{tool_name} blocked by grounding guard")
+            if outcome == "clarify":
+                return Guide(feedback=message)
+            return Proceed()
+
+except ImportError:
+    # strands-agents not installed or wrong version — GroundingGuardHandler unavailable.
+    # Tests and SimpleGroundedAgent still work via GroundingGuard.intercept().
+    class GroundingGuardHandler:  # type: ignore[no-redef]
+        """Stub: strands-agents not importable. Install strands-agents to use."""
+        def __init__(self, *a, **kw):
+            raise ImportError(
+                "GroundingGuardHandler requires strands-agents. "
+                "Install it: pip install strands-agents"
+            )
