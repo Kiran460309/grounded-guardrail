@@ -103,9 +103,10 @@ DEMO_SCENARIOS = {
     },
     "ambiguous_contact": {
         "label": "🟡 Ambiguous contact → clarify",
-        "description": "User said 'send it to her' but two Priyas match. Guard asks for clarification.",
+        "description": "User said 'Send the report to Priya' but two Priyas match in directory. Guard asks for clarification.",
         "history": [
-            {"index": 0, "source": "user", "text": "Send the report to her."},
+            {"index": 0, "source": "user", "text": "Send the report to Priya."},
+            {"index": 1, "source": "tool_output", "text": "Found 2 contacts matching 'Priya': Priya Sharma <priya.sharma@example.com>, Priya Patel <priya.patel@example.com>"},
         ],
         "tool": "send_email",
         "args": {"to": "priya.sharma@example.com"},

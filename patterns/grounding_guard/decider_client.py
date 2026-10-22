@@ -55,11 +55,15 @@ class MockDecider:
             value = (matches[-1] if matches else "").lower()
 
         evidence = state.split("PROPOSED CALL")[0].lower()
-        label = "grounded" if value and value in evidence else "not_grounded"
+        if "recipient" in q.id.lower() and ("found 2" in evidence or "multiple" in evidence):
+            label = "multiple"
+        else:
+            label = "grounded" if value and value in evidence else "not_grounded"
+
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
         return Decision(
             label=label,
-            confidence=0.99 if label == "grounded" else 0.90,
+            confidence=0.99 if label == "grounded" else 0.85 if label == "multiple" else 0.90,
             latency_ms=elapsed_ms,
             backend=self.backend,
         )
