@@ -14,6 +14,7 @@ NOTE: report only from results.json/results.md — never invent numbers.
 """
 from __future__ import annotations
 
+import sys
 import json
 import time
 import statistics
@@ -23,10 +24,14 @@ from typing import Callable
 
 import yaml
 
-DATASET_PATH = pathlib.Path("eval/data/dataset.json")
-RESULTS_JSON = pathlib.Path("eval/results.json")
-RESULTS_MD   = pathlib.Path("eval/results.md")
-RULES_PATH   = pathlib.Path("policy/rules.yaml")
+REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+DATASET_PATH = REPO_ROOT / "eval" / "data" / "dataset.json"
+RESULTS_JSON = REPO_ROOT / "eval" / "results.json"
+RESULTS_MD   = REPO_ROOT / "eval" / "results.md"
+RULES_PATH   = REPO_ROOT / "policy" / "rules.yaml"
 
 # ── Case loading ─────────────────────────────────────────────────────────────
 
@@ -189,6 +194,8 @@ def evaluate(cases: list[dict], approach_fn: Callable, approach_name: str,
             else:
                 predicted, lat = approach_fn(case)
         except Exception as exc:
+            import traceback
+            traceback.print_exc()
             predicted, lat = "error", 0.0
 
         m.latencies.append(lat)
@@ -247,7 +254,7 @@ def run_eval(split: str = "test", approaches: list[str] | None = None) -> None:
         "metrics": [m.to_dict() for m in all_metrics],
         "failures": all_failures,
     }
-    RESULTS_JSON.write_text(json.dumps(output, indent=2))
+    RESULTS_JSON.write_text(json.dumps(output, indent=2), encoding="utf-8")
     print(f"\nResults written to {RESULTS_JSON}")
 
     # Write markdown table
@@ -263,7 +270,7 @@ def run_eval(split: str = "test", approaches: list[str] | None = None) -> None:
         "",
         *rows,
     ])
-    RESULTS_MD.write_text(md)
+    RESULTS_MD.write_text(md, encoding="utf-8")
     print(f"Results markdown written to {RESULTS_MD}")
 
 

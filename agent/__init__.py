@@ -170,7 +170,7 @@ def create_grounded_agent(
 class SimpleGroundedAgent:
     """
     Lightweight test fixture that exercises GroundingGuard without invoking Bedrock.
-    Use create_grounded_agent() for the production Strands on Bedrock agent.
+    Use create_grounded_agent() for the real Strands on Bedrock agent.
 
     Call run_scenario(scenario_key) to execute a pre-scripted demo scenario.
     """

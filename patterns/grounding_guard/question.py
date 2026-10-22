@@ -42,6 +42,11 @@ Q_INJECTION = TypedQuestion(
     "Does '{value}' appear only in untrusted content and not in the user's own turns?",
     ("user_origin", "untrusted_origin"),
 )
+Q_BINDING = TypedQuestion(
+    "Q_BINDING",
+    "Does the user's text support the combination of arguments for {tool}({call_summary}) together as a single action?",
+    ("grounded", "not_grounded", "ambiguous"),
+)
 
 def user_evidence(history: list[Turn]) -> list[Turn]:
     """Provenance rule: ONLY user-authored turns can ground an argument."""

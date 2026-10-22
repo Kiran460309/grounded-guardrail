@@ -55,7 +55,36 @@ class MockDecider:
             value = (matches[-1] if matches else "").lower()
 
         evidence = state.split("PROPOSED CALL")[0].lower()
-        if "recipient" in q.id.lower() and ("found 2" in evidence or "multiple" in evidence):
+        if q.id == "Q_BINDING":
+            vals = [v.lower() for v in re.findall(r"\b\w+=['\"]([^'\"]+)['\"]", question)]
+            aliases = {}
+            if "system lookup" in evidence:
+                parts = evidence.split("system lookup")
+                user_section = parts[0]
+                lookup_section = parts[1]
+                for line in lookup_section.split("\n"):
+                    m = re.search(r"([^:<]+)<([^>]+)>", line)
+                    if m:
+                        name = m.group(1).replace("contact", "").strip()
+                        addr = m.group(2).strip()
+                        aliases[addr] = name
+            else:
+                user_section = evidence
+
+            clauses = [c.strip() for c in re.split(r"(?:,\s*(?:and\s+|but\s+)?|\.\s+|\n+|;\s*|\s+and\s+|\s+but\s+)", user_section) if c.strip()]
+            matched = False
+            for c in clauses:
+                all_present = True
+                for v in vals:
+                    alias = aliases.get(v, v)
+                    if v not in c and alias not in c:
+                        all_present = False
+                        break
+                if all_present:
+                    matched = True
+                    break
+            label = "grounded" if matched else "not_grounded"
+        elif "recipient" in q.id.lower() and ("found 2" in evidence or "multiple" in evidence):
             label = "multiple"
         else:
             label = "grounded" if value and value in evidence else "not_grounded"

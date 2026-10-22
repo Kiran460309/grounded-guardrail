@@ -32,7 +32,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from .question import Turn, Q_GROUNDED, Q_RECIPIENT, Q_INJECTION, render_state
+from .question import Turn, Q_GROUNDED, Q_RECIPIENT, Q_INJECTION, Q_BINDING, render_state
 from .decider_client import DeciderClient, MockDecider, Decision
 from .thresholds import Thresholds, gate, combine, normalise_label
 
@@ -53,7 +53,7 @@ ARG_QUESTION_MAP: dict[str, Any] = {
 GUARDED_ARGS: dict[str, set[str]] = {
     "send_email":    {"to", "subject", "body"},
     "send_payment":  {"recipient", "amount"},
-    "create_event":  {"attendee", "date"},
+    "create_event":  {"attendee", "date", "time"},
     "set_reminder":  {"text", "time"},
     # Any tool not listed here has ALL its args guarded (safe default).
 }
@@ -102,6 +102,7 @@ class DecisionEvent:
     outcome: str          # executed | blocked | clarify | blocked_by_policy
     message_to_agent: str
     backend: str
+    binding: dict | None = None
 
     def to_dict(self) -> dict:
         import datetime
@@ -129,6 +130,7 @@ class DecisionEvent:
             "outcome": self.outcome,
             "message_to_agent": self.message_to_agent,
             "backend": self.backend,
+            "binding": self.binding,
         }
 
 
@@ -247,10 +249,10 @@ class GroundingGuard:
             if tool_guard_set is None or arg_name in tool_guard_set
         ]
 
-        # Build question specs for decide_many() — keyed by "arg_name".
+        # Build question specs for decide_many() — keyed by "arg_name" plus optional "__binding__".
         state = render_state(history, tool_name, "(batch)", "(multiple)")
         questions_spec: dict[str, dict[str, Any]] = {}
-        meta: dict[str, tuple[str, Any, Any]] = {}  # arg_name -> (normalised_val, typed_q, q_key)
+        meta: dict[str, tuple[str, Any, Any]] = {}  # key -> (normalised_val, typed_q, q_key)
 
         for arg_name, arg_value in guarded_items:
             norm_val = _normalise_value(arg_value)
@@ -263,9 +265,21 @@ class GroundingGuard:
             }
             meta[arg_name] = (norm_val, typed_q, q_key)
 
+        # Whole-call binding question (evaluates argument combination as a single action)
+        binding_key = "__binding__"
+        binding_call_summary = ", ".join(f"{name}='{_normalise_value(val)}'" for name, val in guarded_items)
+        if len(guarded_items) >= 2:
+            binding_text = Q_BINDING.template.format(tool=tool_name, call_summary=binding_call_summary)
+            questions_spec[binding_key] = {
+                "type": "noul",
+                "instructions": binding_text,
+            }
+            meta[binding_key] = (binding_call_summary, Q_BINDING, f"{tool_name}.__binding__")
+
         # Send the batch (or fall back to per-call if MockDecider / missing decide_many).
         arg_decisions: list[ArgDecision] = []
         per_arg_gates: list[str] = []
+        binding_info: dict | None = None
 
         if guarded_items:
             try:
@@ -276,18 +290,22 @@ class GroundingGuard:
                 else:
                     raise AttributeError("decide_many not available")
             except (NotImplementedError, AttributeError):
-                # Fall back: call decide() once per argument (MockDecider path).
+                # Fall back: call decide() once per question (MockDecider path).
                 batch_results = {}
-                for arg_name, (norm_val, typed_q, q_key) in meta.items():
-                    arg_state = render_state(history, tool_name, arg_name, norm_val)
-                    question_text = typed_q.template.format(value=norm_val, arg=arg_name)
+                for q_name, (norm_val, typed_q, q_key) in meta.items():
+                    if q_name == binding_key:
+                        arg_state = render_state(history, tool_name, "call", norm_val)
+                        question_text = typed_q.template.format(tool=tool_name, call_summary=norm_val)
+                    else:
+                        arg_state = render_state(history, tool_name, q_name, norm_val)
+                        question_text = typed_q.template.format(value=norm_val, arg=q_name)
                     try:
-                        batch_results[arg_name] = self.decider.decide(
+                        batch_results[q_name] = self.decider.decide(
                             arg_state, question_text, typed_q
                         )
                     except Exception as exc:
-                        logger.error("Decider error for %s.%s: %s", tool_name, arg_name, exc)
-                        batch_results[arg_name] = (
+                        logger.error("Decider error for %s.%s: %s", tool_name, q_name, exc)
+                        batch_results[q_name] = (
                             Decision("ambiguous", 0.0, 0.0, "decider_error")
                             if self.thresholds.fail_closed
                             else Decision("grounded", 1.0, 0.0, "error_open")
@@ -296,11 +314,13 @@ class GroundingGuard:
                 logger.error("Decider batch error: %s", exc)
                 # Fail-closed: treat all as ambiguous.
                 batch_results = {
-                    arg_name: Decision("ambiguous", 0.0, 0.0, "decider_error")
-                    for arg_name in meta
+                    q_name: Decision("ambiguous", 0.0, 0.0, "decider_error")
+                    for q_name in meta
                 }
 
-            for arg_name, (norm_val, typed_q, q_key) in meta.items():
+            # 1. Per-argument decisions
+            for arg_name, arg_value in guarded_items:
+                norm_val, typed_q, q_key = meta[arg_name]
                 dec: Decision = batch_results.get(
                     arg_name,
                     Decision("ambiguous", 0.0, 0.0, "decider_error")
@@ -318,27 +338,61 @@ class GroundingGuard:
                 ))
                 per_arg_gates.append(g)
 
-        # ── 4. Combine per-arg outcomes and normalise to event-contract vocab ────
+            # 2. Whole-call binding decision
+            if binding_key in batch_results:
+                b_dec = batch_results[binding_key]
+                b_canonical = normalise_label(b_dec.label)
+                b_gate = gate(b_canonical, b_dec.confidence, f"{tool_name}.__binding__", self.thresholds)
+                binding_info = {
+                    "question_id": Q_BINDING.id,
+                    "call_summary": binding_call_summary,
+                    "label": b_dec.label,
+                    "confidence": b_dec.confidence,
+                    "gate_result": b_gate,
+                    "latency_ms": b_dec.latency_ms,
+                }
+
+        # ── 4. Combine per-arg outcomes & apply binding gate rule ────────────────
         _raw = combine(per_arg_gates) if per_arg_gates else "execute"
         # Internal gate vocab: execute/block/clarify → public contract: executed/blocked/clarify
         _norm = {"execute": "executed", "block": "blocked"}
         final = _norm.get(_raw, _raw)
 
+        # Gate rule: any per-argument block or a binding verdict below threshold produces block or clarify;
+        # the message to the agent names the mismatched pair.
+        if final != "blocked" and binding_info:
+            if binding_info["gate_result"] == "block":
+                final = "blocked"
+            elif binding_info["gate_result"] == "clarify" and final == "executed":
+                final = "clarify"
+
         # ── 5. Build message to agent ────────────────────────────────────────
         if final == "blocked":
             blocked_args = [a for a in arg_decisions if a.gate_result == "block"]
-            details = "; ".join(
-                f"{a.name}={a.value!r} ({a.label}, conf={a.confidence:.2f})"
-                for a in blocked_args
-            )
-            msg = f"BLOCKED: argument(s) not grounded in user statements — {details}"
+            if blocked_args:
+                details = "; ".join(
+                    f"{a.name}={a.value!r} ({a.label}, conf={a.confidence:.2f})"
+                    for a in blocked_args
+                )
+                msg = f"BLOCKED: argument(s) not grounded in user statements — {details}"
+            else:
+                msg = (
+                    f"BLOCKED: argument combination not grounded in user statements — "
+                    f"{tool_name}({binding_call_summary}) is a mismatched pair."
+                )
         elif final == "clarify":
             ambig = [a for a in arg_decisions if a.gate_result == "clarify"]
-            details = "; ".join(f"{a.name}={a.value!r}" for a in ambig)
-            msg = (
-                f"CLARIFY NEEDED: I'm not confident {details} is supported "
-                f"by what you said. Could you confirm?"
-            )
+            if ambig:
+                details = "; ".join(f"{a.name}={a.value!r}" for a in ambig)
+                msg = (
+                    f"CLARIFY NEEDED: I'm not confident {details} is supported "
+                    f"by what you said. Could you confirm?"
+                )
+            else:
+                msg = (
+                    f"CLARIFY NEEDED: I'm not confident that {tool_name}({binding_call_summary}) "
+                    f"is the intended combination. Could you confirm?"
+                )
         else:
             msg = ""
 
@@ -350,6 +404,7 @@ class GroundingGuard:
             outcome=final,
             message_to_agent=msg,
             backend=self.decider.backend,
+            binding=binding_info,
         )
         self._emit(event)
         return final, msg, event

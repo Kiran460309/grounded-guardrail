@@ -323,3 +323,78 @@ class TestStrandsHook:
         assert len(agent._intervention_registry._handlers) == 1
         assert agent._intervention_registry._handlers[0].name == "grounding-guard"
 
+
+# ── Whole-Call Binding & Swapped Pairings ─────────────────────────────────────
+
+class TestWholeCallBinding:
+    def test_swapped_pairing_blocked(self):
+        # User says: "Pay John $20 and Sam $50"
+        # Proposed call: send_payment(recipient="john", amount=50.0)
+        # Both "john" and "50" are individually in user turns, but the pairing is swapped.
+        from patterns.grounding_guard.handler import GroundingGuard
+        from patterns.grounding_guard.decider_client import MockDecider
+        from patterns.grounding_guard.question import Turn
+
+        guard = GroundingGuard(decider=MockDecider())
+        history = [Turn(0, "user", "Pay John $20 and Sam $50 for the tickets.")]
+        outcome, msg, event = guard.intercept(
+            "send_payment",
+            {"recipient": "john", "amount": 50.0},
+            history,
+        )
+        assert outcome in ("block", "blocked")
+        assert "john" in msg and "50" in msg
+
+    def test_correct_pairing_executed(self):
+        from patterns.grounding_guard.handler import GroundingGuard
+        from patterns.grounding_guard.decider_client import MockDecider
+        from patterns.grounding_guard.question import Turn
+
+        guard = GroundingGuard(decider=MockDecider())
+        history = [Turn(0, "user", "Pay John $20 and Sam $50 for the tickets.")]
+        outcome, msg, event = guard.intercept(
+            "send_payment",
+            {"recipient": "john", "amount": 20.0},
+            history,
+        )
+        assert outcome == "executed"
+
+    def test_binding_question_included_in_batched_spec(self):
+        from patterns.grounding_guard.handler import GroundingGuard
+        from patterns.grounding_guard.decider_client import MockDecider
+        from patterns.grounding_guard.question import Turn
+
+        guard = GroundingGuard(decider=MockDecider())
+        history = [Turn(0, "user", "Pay John $20")]
+        outcome, msg, event = guard.intercept(
+            "send_payment",
+            {"recipient": "john", "amount": 20.0},
+            history,
+        )
+        assert hasattr(event, "binding") and event.binding is not None
+        assert event.binding["question_id"] == "Q_BINDING"
+
+    def test_eval_swapped_pairing_dataset_cases(self):
+        import json, pathlib
+        from patterns.grounding_guard.handler import GroundingGuard
+        from patterns.grounding_guard.decider_client import MockDecider
+        from patterns.grounding_guard.question import Turn
+
+        dataset_path = pathlib.Path("eval/data/dataset.json")
+        cases = json.loads(dataset_path.read_text(encoding="utf-8"))
+        swapped_cases = [c for c in cases if c.get("category") == "swapped_pairing"]
+        assert len(swapped_cases) >= 10, f"Expected at least 10 swapped pairing cases, got {len(swapped_cases)}"
+        
+        dev_cases = [c for c in swapped_cases if c.get("split") == "dev"]
+        test_cases = [c for c in swapped_cases if c.get("split") == "test"]
+        assert len(dev_cases) >= 5, f"Expected at least 5 dev split cases, got {len(dev_cases)}"
+        assert len(test_cases) >= 5, f"Expected at least 5 test split cases, got {len(test_cases)}"
+
+        guard = GroundingGuard(decider=MockDecider())
+        for case in swapped_cases:
+            history = [Turn(h["index"], h["source"], h["text"]) for h in case["history"]]
+            outcome, msg, event = guard.intercept(case["tool"], case["proposed_args"], history)
+            assert outcome in ("block", "blocked"), f"Case {case['id']} expected blocked, got {outcome}: {msg}"
+
+
+

@@ -50,7 +50,7 @@ AI agents don't just generate text anymore. They take real-world actions: sendin
 | Existing Approach | How It Works | Why It Fails |
 |---|---|---|
 | **Trusting the Model** | Rely on prompt instructions ("only use user numbers") | LLMs suffer from sycophancy, attention drift, and instruction overrides. Completely unsafe. |
-| **Generative LLM-as-Judge** | Ask a second Claude/GPT model to review every call | Adds **1.5 – 3.0+ seconds of latency** and burns hundreds of tokens per tool call. Cost and delay make teams turn it off. |
+| **Generative LLM-as-Judge** | Ask a second Claude/GPT model to review every call | Introduces significant round-trip latency and token costs per tool call (measured empirical comparison in /eval). Cost and delay make teams turn it off. |
 | **Human-in-the-Loop on Everything** | Require a human to click "Approve" on every action | Destroys agent autonomy. Users suffer approval fatigue and blindly click accept. |
 
 > **There is no fast, cheap, measurable way to confirm that an agent acts only on what the user actually said.**
@@ -149,7 +149,7 @@ pip install -e .
 cp .env.example .env
 ```
 
-#### 2. Run All Unit & Provenance Tests (31/31 Passing)
+#### 2. Run All Unit & Provenance Tests
 ```bash
 py -3 -m pytest tests/ -v
 ```
