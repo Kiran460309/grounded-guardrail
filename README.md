@@ -3,7 +3,7 @@
 [![#strands-decider-2b](https://img.shields.io/badge/%23strands--decider--2b-blue)](https://github.com/strands-labs/strands-decider)
 [![#guardrails](https://img.shields.io/badge/%23guardrails-purple)](https://github.com/strands-labs/strands-decider)
 [![MIT License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests Passing](https://img.shields.io/badge/tests-31%2F31%20passing-brightgreen)](tests/)
+[![Tests Passing](https://img.shields.io/badge/tests-35%2F35%20passing-brightgreen)](tests/)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/)
 
 Pattern Tags: `#strands-decider-2b` `#guardrails`
