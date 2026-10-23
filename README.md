@@ -3,8 +3,9 @@
 [![#strands-decider-2b](https://img.shields.io/badge/%23strands--decider--2b-blue)](https://github.com/strands-labs/strands-decider)
 [![#guardrails](https://img.shields.io/badge/%23guardrails-purple)](https://github.com/strands-labs/strands-decider)
 [![MIT License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests Passing](https://img.shields.io/badge/tests-35%2F35%20passing-brightgreen)](tests/)
+[![Tests Passing](https://img.shields.io/badge/tests-39%2F39%20passing-brightgreen)](tests/)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Kiran460309/grounded-guardrail/blob/main/demo.ipynb)
 
 Pattern Tags: `#strands-decider-2b` `#guardrails`
 
